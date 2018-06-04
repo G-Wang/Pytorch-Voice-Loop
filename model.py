@@ -264,6 +264,13 @@ class Loop(nn.Module):
         mu_t = self.attention.init_mu(batch_size)
         return p_embedding, s_embedding, S_t.to(self.device), mu_t.to(self.device)
 
+    def count_parameters(model):
+        """Return total number of parameters in millions
+
+        """
+        num = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        return num/1e6
+
 
     def forward(self, p_embedding, s_embedding, o_tm1, S_tm1, mu_tm1):
         """Does one step of forward pass, this is equivalent to one step in a sequence.
