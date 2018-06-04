@@ -48,10 +48,10 @@ class Encoder(nn.Module):
             # unpack lut_p with actual sequence length into packedsequence
             lut_p = unpack(lut_p, sentence[1].to(self.device), batch_first=True) # always batch first
             # pad our packed sequence, only take the actual padding, we don't need to sequence length
-            lut_p = pack(lut_p)[0]
+            lut_p = pack(lut_p, batch_first=True)[0]
         else:
             # else we just have a batch tensor of sentence
-            lut_p = self.Lut_P(sentence.to(device))
+            lut_p = self.Lut_P(sentence.to(self.device))
         
         lut_s = self.Lut_S(speaker_id.to(self.device)).view(-1, self.hp.ds) # compute lut_s and reshape to batch_size x ds
         
@@ -111,7 +111,7 @@ class Attention(nn.Module):
         phi_t = g_t * torch.exp(-0.5*sig_t*(mu_t_ - J)**2)
         alpha_t = self.COEF*torch.sum(phi_t,1).unsqueeze(1)
         # c_t
-        c_t = torch.bmm(alpha_t, context).transpose(0,1).squeeze(0)
+        c_t = torch.bmm(alpha_t, lut_p).transpose(0,1).squeeze(0)
         
         return c_t, mu_t, alpha_t
 
@@ -190,13 +190,12 @@ class MaskMSE(nn.Module):
         self.device = device
         self.to(device)
     
-    @staticmethod
-    def _mask(sequence_len, max_len=None):
+    def _mask(self, sequence_len, max_len=None):
         if max_len is None:
             max_len = sequence_len.max()
         
         batch_size = len(sequence_len)
-        seq_range = torch.range(0, max_len-1).long()
+        seq_range = torch.range(0, max_len-1).long().to(self.device)
         seq_range_expand = seq_range.expand_as(torch.Tensor(batch_size, max_len))    
         seq_length_expand = sequence_len.unsqueeze(1).expand_as(seq_range_expand)
         return (seq_range_expand < seq_length_expand).float()
@@ -233,6 +232,7 @@ class Loop(nn.Module):
         self.attention = Attention(hparams, device)
         self.decoder = Decoder(hparams, device)
         self.loss_func = MaskMSE(device)
+        self.to(device)
 
     def initialize(self, sentence, speaker_id):
         """Initialization function.
@@ -259,9 +259,9 @@ class Loop(nn.Module):
         # create S buffer
         S_t = torch.zeros(batch_size, self.hp.d, self.hp.k)
         # initialize buffer with speaker embedding as described Step III of paper
-        S_t[:,:self.hp.dp,:] = self.s_embedding.unsqueeze(2).expand(self.s_embedding.shape[0], self.s_embedding.shape[1], self.hp.k)
+        S_t[:,:self.hp.dp,:] = s_embedding.unsqueeze(2).expand(s_embedding.shape[0], s_embedding.shape[1], self.hp.k)
         # also initialize our mu_tm1, the initial mean parmeter for our GMM
-        mu_t = self.attention.init_mu(batch_size)
+        mu_t = torch.zeros(batch_size, self.hp.c)
         return p_embedding, s_embedding, S_t.to(self.device), mu_t.to(self.device)
 
     def count_parameters(model):
@@ -314,10 +314,11 @@ class Loop(nn.Module):
         """
         assert isinstance(sentence, tuple), "sentence provided is not tuple"
         assert isinstance(target, tuple), "target provided is not tuple"
-        assert sentence.shape[0] == len(sentence[1]), 'batch size of sentence[0] does not match batch_size_len'
-        assert target.shape[0] == len(target[1]), 'batch size of target[0] does not match batch_size_len'
+        assert sentence[0].shape[0] == len(sentence[1]), 'batch size of sentence[0] does not match batch_size_len'
+        assert target[0].shape[0] == len(target[1]), 'batch size of target[0] does not match batch_size_len'
         # model initialize and initialize o_t to zero
         p_embedding, s_embedding, S_t, mu_t = self.initialize(sentence, speaker_id)
+        batch_size = speaker_id.shape[0]
         o_t = torch.zeros(batch_size, self.hp.do).to(self.device)
         # create output collection and get target data and length
         output_collect = []
@@ -340,7 +341,7 @@ class Loop(nn.Module):
                 o_t = o_t
 
         # compute loss
-        total_output = torch.cat(total_output, dim=1)
+        total_output = torch.cat(output_collect, dim=1)
         loss = self.loss_func(total_output, target_data, target_len)
 
         return loss
