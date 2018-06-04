@@ -44,16 +44,16 @@ class Encoder(nn.Module):
         if isinstance(sentence, tuple):
             assert sentence[0].shape[0] == len(sentence[1]), "padded data batch size does not match number of sequences"
             # embed padded sentence
-            lut_p = self.Lut_P(sentence[0])
+            lut_p = self.Lut_P(sentence[0].to(self.device))
             # unpack lut_p with actual sequence length into packedsequence
-            lut_p = unpack(lut_p, sentence[1], batch_first=True) # always batch first
+            lut_p = unpack(lut_p, sentence[1].to(self.device), batch_first=True) # always batch first
             # pad our packed sequence, only take the actual padding, we don't need to sequence length
             lut_p = pack(lut_p)[0]
         else:
             # else we just have a batch tensor of sentence
-            lut_p = self.Lut_P(sentence)
+            lut_p = self.Lut_P(sentence.to(device))
         
-        lut_s = self.Lut_S(speaker_id).view(-1, self.hp.ds) # compute lut_s and reshape to batch_size x ds
+        lut_s = self.Lut_S(speaker_id.to(self.device)).view(-1, self.hp.ds) # compute lut_s and reshape to batch_size x ds
         
         return lut_p, lut_s
 
@@ -266,7 +266,7 @@ class Loop(nn.Module):
 
 
     def forward(self, p_embedding, s_embedding, o_tm1, S_tm1, mu_tm1):
-        """Does one step of forward pass.
+        """Does one step of forward pass, this is equivalent to one step in a sequence.
 
         Args:
             p_embedding(batch_size x max_seq_len x dp): phoneme/input embedding
@@ -288,25 +288,52 @@ class Loop(nn.Module):
 
         return o_t, S_t, mu_t
 
-    
+    def compute_loss_batch(self, sentence, speaker_id, target, teacher_forcing=False):
+        """Compute loss for a batch of input/output data.
 
+        Note this function has multiple ways of conditioning on the next sequence.
 
+        For training, it's recommended to keep teacher_forcing to True, this will force teacher forcing to 
+        follow 3.1 as outlined in the paper. One can set the teacher forcing noise in hparams
 
+        For validation, it's recommended to keep teacher_forcing to False
 
+        Args:
+            sentence(tuple of batch_size x seq_len and batch_seq_len_list):
+            speaker_id(batch_size x 1):
+            target(batch_size x seq_len x output_dim):
+            teacher_forcing(bool): if True, averaged teacher forcing will be implemented following paper
 
+        """
+        assert isinstance(sentence, tuple), "sentence provided is not tuple"
+        assert isinstance(target, tuple), "target provided is not tuple"
+        assert sentence.shape[0] == len(sentence[1]), 'batch size of sentence[0] does not match batch_size_len'
+        assert target.shape[0] == len(target[1]), 'batch size of target[0] does not match batch_size_len'
+        # model initialize and initialize o_t to zero
+        p_embedding, s_embedding, S_t, mu_t = self.initialize(sentence, speaker_id)
+        o_t = torch.zeros(batch_size, self.hp.do).to(self.device)
+        # create output collection and get target data and length
+        output_collect = []
+        target_data = target[0].to(self.device)
+        target_len = target[1].to(self.device)
+        # get seq_len
+        seq_len = target_data.shape[1]
+        # loop through sequence
+        for i in range(seq_len):
+            # forward pass
+            o_t, S_t, mu_t = self.forward(p_embedding, s_embedding, o_t, S_t, mu_t)
+            # append output to output list
+            output_collect.append(o_t)
+            # prepare o_t for next step, teacher forcing if need to
+            if teacher_forcing:
+                # see section 3.1 of paper
+                o_t = (o_t + target_data[:,i,:].unsqueeze(1))/2+np.random.uniform(-self.hp.noise_range, self.hp.noise_range)
+            else:
+                # use output directly
+                o_t = o_t
 
+        # compute loss
+        total_output = torch.cat(total_output, dim=1)
+        loss = self.loss_func(total_output, target_data, target_len)
 
-
-
-
-
-
-
-    
-
-
-
-
-
-
-
+        return loss
