@@ -335,7 +335,9 @@ class Loop(nn.Module):
             # prepare o_t for next step, teacher forcing if need to
             if teacher_forcing:
                 # see section 3.1 of paper
-                o_t = (o_t + target_data[:,i,:].unsqueeze(1))/2+np.random.uniform(-self.hp.noise_range, self.hp.noise_range)
+                #o_t = (o_t + target_data[:,i,:].unsqueeze(1))/2+np.random.normal(0, self.hp.noise_range)
+                # directly predict on the target sequence
+                o_t = target_data[:,i,:].unsqueeze(1)+np.random.normal(0, self.hp.noise_range)
             else:
                 # use output directly
                 o_t = o_t
